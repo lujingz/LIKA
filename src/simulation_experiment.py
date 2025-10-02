@@ -2,8 +2,82 @@
 Do simulation experiments for the method
 '''
 from method import *
-from pipeline import pipeline, new_pipeline
+from pipeline import pipeline
 from utils import *
+
+def KSEA(intensity_df, log_transform=False, network_df=None):
+    # Get p-values
+    logFC = {}
+    intensity_df.columns = intensity_df.columns.str.lower()
+    intensity_cols = get_intensity_columns(intensity_df)
+
+    if log_transform:
+        # 0 means missing
+        intensity_df['mean'] = intensity_df[intensity_cols].apply(lambda x: x[x != 0].mean(), axis=1)
+        intensity_df['mean'] = np.log2(intensity_df['mean']+1e-6)
+    else:
+        intensity_df['mean'] = intensity_df[intensity_cols].mean(axis=1)
+    
+
+    for index, row in intensity_df.iterrows():
+        if row['name'] in logFC:
+            logFC[row['name']] += row['mean'] * (2 * row['group'] - 1)
+        else:
+            logFC[row['name']] = row['mean'] * (2 * row['group'] - 1)
+    logFC = {k:v for k,v in logFC.items() if not np.isnan(v)}
+
+    # Get network data # TODO: allow the user to include more netwokrs than kinase-phosphosite network
+    if network_df is not None: # self-defined network
+        network_df.columns = network_df.columns.str.lower()
+        network = nx.from_pandas_edgelist(network_df, source="from", target="to", create_using=my_network)
+        for index, row in network_df.iterrows():
+            network.nodes[row['to']]['Description'] = 'Phosphosite'
+            network.nodes[row['from']]['Description'] = 'Kinase'
+            network.nodes[row['to']]['p_value'] = logFC[row['to']]
+        network.set_kinase_index()
+        network.set_unmissing_neighbors_and_children()
+    else: # use default network
+        df = pd.read_csv('data/KSEA_dataset_processed.csv')
+        df = df[df['to'].isin(logFC.keys())].reset_index(drop=True)
+        network = nx.from_pandas_edgelist(df, source="from", target="to", create_using=my_network)
+        for index, row in df.iterrows():
+            network.nodes[row['to']]['Description'] = 'Phosphosite'
+            network.nodes[row['to']]['p_value'] = logFC[row['to']]
+            network.nodes[row['from']]['Description'] = 'Kinase'
+        network.set_kinase_index()
+        network.set_unmissing_neighbors_and_children()
+
+    # get background mean and std
+    logFC = list(logFC.values())
+    background_mean = np.mean(logFC)
+    background_std = np.std(logFC)
+
+    kinase_scores = {}
+    p_values = {}
+    for kinase in network.get_kinase():
+        kinase_scores[kinase] = 0
+        num = 0
+        for node in network.get_unmissing_children(kinase):
+            kinase_scores[kinase] += network.nodes[node]['p_value']
+            num += 1
+        kinase_scores[kinase] /= num
+        kinase_scores[kinase] = (kinase_scores[kinase] - background_mean) / (background_std/np.sqrt(num))
+        p_value = 2 * (1 - stats.norm.cdf(abs(kinase_scores[kinase])))
+        p_values[kinase] = p_value
+
+    # get top 10 kinases
+    top_kinases = sorted(kinase_scores.items(), key=lambda x: x[1], reverse=False)[:10]
+    top_kinases = [kinase for kinase, score in top_kinases]
+    results_df = pd.DataFrame({
+        'Name': list(p_values.keys()),
+        'p_value': list(p_values.values()),
+        'Lower Bound': list(map(lambda x:-x, list(p_values.values())))
+    })
+
+    # print the kinases with p_value < 0.05
+    # print(BH_(p_values, 0.05))
+
+    return results_df, top_kinases
 
 def simulation_experiment_1():
     '''
@@ -46,91 +120,10 @@ def simulation_experiment_1():
     # plot_top_kinases(results_df, top_kinases)
     # Run pipeline
     network, rejection_set, results_df, top_kinases, _ = pipeline(intensity_df, log_transform=False, network_df=network_df, CI=0.2)
-    # visualize_rejection(network, rejection_set, 'Simulation Experiment 1', None)
-    # plot_top_kinases(results_df, top_kinases)
+    visualize_rejection(network, rejection_set, 'Simulation Experiment 1', None)
+    plot_top_kinases(results_df, top_kinases)
     results_df.to_csv('results/simulation_experiment_1_LIKA.csv', index=False)
-    # run new pipeline
-    new_p_values = new_pipeline(intensity_df, log_transform=False, network_df=network_df)
-    df = pd.DataFrame(new_p_values.items(), columns=['Name', 'p_value'])
-    df = df.sort_values(by='p_value', ascending=True)[:10]
-    print(df)
-    ground_truth = ['K0', 'K1']
-    colors_ksea = ["#E69F00" if name in ground_truth else "#0072B2" for name in df['Name']]
-    fig, ax = plt.subplots(figsize=(10, 5))
-    bars = ax.barh(df['Name'], df['p_value'], color=colors_ksea)
-    ax.set_xlabel("p-value by new pipeline", fontsize=12)
-    ax.set_xscale('log')
-    ax.invert_yaxis()  # highest score on top
-    ax.spines[['top', 'right']].set_visible(False)
-    # Add p-value labels on the bars
-    for i, (name, p_val) in enumerate(zip(df['Name'], df['p_value'])):
-        ax.text(p_val * 1.1, i, f'{p_val:.5f}', va='center', fontsize=10)
-    plt.tight_layout()
-    plt.savefig('results/simulation_experiment_1_new_pipeline.png')
-    plt.show()
-    # ground_truth = ['K0', 'K1']
-    # colors_ksea = ["#E69F00" if name in ground_truth else "#0072B2" for name in df['Name']]
-    # fig, ax = plt.subplots(figsize=(10, 5))
-    # bars = ax.barh(df['Name'], df['p_value'], color=colors_ksea)
-    # ax.set_xlabel("p-value by KSEA", fontsize=12)
-    # ax.set_xscale('log')
-    # ax.invert_yaxis()  # highest score on top
-    # ax.spines[['top', 'right']].set_visible(False)
-    # plt.tight_layout()
-    # plt.show()
     
-def try_new_pipeline():
-    '''
-    Example 1: all substrates are only affected by one kinase
-    '''
-    from_ = list(map(lambda x:'K'+str(x//10), [i for i in range(100)])) # 10 kinases in total, each have 10 substrates
-    to_ = list(map(lambda x:str(x), [i for i in range(100)])) # 10 substrates in total, each have 10 kinases
-    network_df = pd.DataFrame({
-        'from': from_,
-        'to': to_
-    })
-    # Generate simulation data
-    n = 5  # number of intensity columns
-    np.random.seed(42)  # for reproducibility
-    data = []
-    for name in range(100):
-        # Group 0 line - always sample from N(0,1)
-        row_group0 = {'name': str(name), 'group': 0}
-        intensities_group0 = np.random.normal(0, 1, n)
-        for i in range(n):
-            row_group0[f'intensity_{i}'] = intensities_group0[i]
-        data.append(row_group0)
-        
-        # Group 1 line - sample based on name value
-        row_group1 = {'name': str(name), 'group': 1}
-        if int(name) < 20:
-            # Sample from N(1,1) for names < 20
-            intensities_group1 = np.random.normal(2, 1, n)
-        else:
-            # Sample from N(0,1) for names >= 20
-            intensities_group1 = np.random.normal(0, 1, n)
-        
-        for i in range(n):
-            row_group1[f'intensity_{i}'] = intensities_group1[i]
-        data.append(row_group1)
-    print('abnormal kinases: ', [0,1])
-    intensity_df = pd.DataFrame(data)
-    # run new pipeline
-    new_p_values = new_pipeline(intensity_df, log_transform=False, network_df=network_df)
-    df = pd.DataFrame(new_p_values.items(), columns=['Name', 'p_value'])
-    df = df.sort_values(by='p_value', ascending=True)[:10]
-    ground_truth = ['K0', 'K1']
-    colors_ksea = ["#E69F00" if name in ground_truth else "#0072B2" for name in df['Name']]
-    fig, ax = plt.subplots(figsize=(10, 5))
-    bars = ax.barh(df['Name'], df['p_value'], color=colors_ksea)
-    ax.set_xlabel("p-value by KSEA", fontsize=12)
-    ax.set_xscale('log')
-    ax.invert_yaxis()  # highest score on top
-    ax.spines[['top', 'right']].set_visible(False)
-    plt.tight_layout()
-    plt.savefig('results/simulation_experiment_1_new_pipeline.png')
-    plt.show()
-
 def simulation_experiment_3():
     '''
     Example 3: substrates can be affected by multiple kinases (shared nodes)
@@ -219,28 +212,10 @@ def simulation_experiment_3():
     print("\n=== Pipeline Method Results ===")
     # Run pipeline
     network, rejection_set, results_df, top_kinases, _ = pipeline(intensity_df, log_transform=False, network_df=network_df, CI=0.2)
-    # visualize_rejection(network, rejection_set, 'Simulation Experiment 2', None)
-    # plot_top_kinases(results_df, top_kinases)
+    visualize_rejection(network, rejection_set, 'Simulation Experiment 2', None)
+    plot_top_kinases(results_df, top_kinases)
     results_df.to_csv('results/simulation_experiment_3_LIKA.csv', index=False)
-    # run new pipeline
-    new_p_values = new_pipeline(intensity_df, log_transform=False, network_df=network_df)
-    df = pd.DataFrame(new_p_values.items(), columns=['Name', 'p_value'])
-    df = df.sort_values(by='p_value', ascending=True)[:10]
-    print(df)
-    ground_truth = ['K0', 'K2', 'K5', 'K8']
-    colors_ksea = ["#E69F00" if name in ground_truth else "#0072B2" for name in df['Name']]
-    fig, ax = plt.subplots(figsize=(10, 5))
-    bars = ax.barh(df['Name'], df['p_value'], color=colors_ksea)
-    ax.set_xlabel("p-value by new pipeline", fontsize=12)
-    ax.set_xscale('log')
-    ax.invert_yaxis()  # highest score on top
-    ax.spines[['top', 'right']].set_visible(False)
-    # Add p-value labels on the bars
-    for i, (name, p_val) in enumerate(zip(df['Name'], df['p_value'])):
-        ax.text(p_val * 1.1, i, f'{p_val:.5f}', va='center', fontsize=10)
-    plt.tight_layout()
-    plt.savefig('results/simulation_experiment_3_new_pipeline.png')
-    plt.show()
+
     
     return network_df, intensity_df, abnormal_kinases 
 
@@ -338,50 +313,11 @@ def simulation_experiment_2():
     print("\n=== Pipeline Method Results ===")
     # Run pipeline
     network, rejection_set, results_df, top_kinases, _ = pipeline(intensity_df, log_transform=False, network_df=network_df, CI=0.2)
-    # visualize_rejection(network, rejection_set, 'Simulation Experiment 3', None)
-    # plot_top_kinases(results_df, top_kinases)
-    results_df.to_csv('results/simulation_experiment_2_LIKA.csv', index=False)
-    # run new pipeline
-    new_p_values = new_pipeline(intensity_df, log_transform=False, network_df=network_df)
-    df = pd.DataFrame(new_p_values.items(), columns=['Name', 'p_value'])
-    df = df.sort_values(by='p_value', ascending=True)[:10]
-    print(df)
-    ground_truth = ['K0', 'K2', 'K5', 'K8']
-    colors_ksea = ["#E69F00" if name in ground_truth else "#0072B2" for name in df['Name']]
-    fig, ax = plt.subplots(figsize=(10, 5))
-    bars = ax.barh(df['Name'], df['p_value'], color=colors_ksea)
-    ax.set_xlabel("p-value by new pipeline", fontsize=12)
-    ax.set_xscale('log')
-    ax.invert_yaxis()  # highest score on top
-    ax.spines[['top', 'right']].set_visible(False)
-    
-    # Add p-value labels on the bars
-    for i, (name, p_val) in enumerate(zip(df['Name'], df['p_value'])):
-        ax.text(p_val * 1.1, i, f'{p_val:.5f}', va='center', fontsize=10)
-    
-    plt.tight_layout()
-    plt.savefig('results/simulation_experiment_2_new_pipeline.png')
-    plt.show()
-    
-    return network_df, intensity_df, abnormal_kinases
-
-def vs_KSEA():
-    intensity_df = pd.read_csv('data/intensity_data_INKA.csv')
-    network_df = pd.read_csv('data/KSEA_dataset_processed.csv')
-    network_df = network_df[network_df['to'].isin(set(intensity_df['Name']))].reset_index(drop=True)
-    results_df, top_kinases = KSEA(intensity_df, log_transform=True, network_df=network_df)
-    plot_top_kinases(results_df, top_kinases)
-    # Run pipeline
-    network, rejection_set, results_df, top_kinases, _ = pipeline(intensity_df, log_transform=True, CI=0.2)
     visualize_rejection(network, rejection_set, 'Simulation Experiment 3', None)
     plot_top_kinases(results_df, top_kinases)
-
-def vs_KSEA_2():
-    intensity_df = pd.read_csv('data/residual_data_Schizo.csv')
-    network_df = pd.read_csv('data/KSEA_dataset_processed.csv')
-    network_df = network_df[network_df['to'].isin(set(intensity_df['Name']))].reset_index(drop=True)
-    results_df, top_kinases = KSEA(intensity_df, log_transform=False, network_df=network_df)
-    plot_top_kinases(results_df, top_kinases)
+    results_df.to_csv('results/simulation_experiment_2_LIKA.csv', index=False)
+    
+    return network_df, intensity_df, abnormal_kinases
 
 
 if __name__ == "__main__":
@@ -397,5 +333,3 @@ if __name__ == "__main__":
     print("=== Running Simulation Experiment 3 ===")
     network_df3, intensity_df3, abnormal_kinases3 = simulation_experiment_3()
 
-    # vs_KSEA_2()
-    # try_new_pipeline()

@@ -4,7 +4,6 @@ currently contains the following methods:
 BH
 Bonferroni
 STAR
-KSEA
 
 return a list of node names
 """
@@ -30,81 +29,6 @@ from utils import *
 import torch
 from tqdm import tqdm
 
-def KSEA(intensity_df, log_transform=False, network_df=None):
-    # Get p-values
-    logFC = {}
-    intensity_df.columns = intensity_df.columns.str.lower()
-    intensity_cols = get_intensity_columns(intensity_df)
-
-    if log_transform:
-        # 0 means missing
-        intensity_df['mean'] = intensity_df[intensity_cols].apply(lambda x: x[x != 0].mean(), axis=1)
-        intensity_df['mean'] = np.log2(intensity_df['mean']+1e-6)
-    else:
-        intensity_df['mean'] = intensity_df[intensity_cols].mean(axis=1)
-    
-
-    for index, row in intensity_df.iterrows():
-        if row['name'] in logFC:
-            logFC[row['name']] += row['mean'] * (2 * row['group'] - 1)
-        else:
-            logFC[row['name']] = row['mean'] * (2 * row['group'] - 1)
-    logFC = {k:v for k,v in logFC.items() if not np.isnan(v)}
-
-    # Get network data # TODO: allow the user to include more netwokrs than kinase-phosphosite network
-    if network_df is not None: # self-defined network
-        network_df.columns = network_df.columns.str.lower()
-        network = nx.from_pandas_edgelist(network_df, source="from", target="to", create_using=my_network)
-        for index, row in network_df.iterrows():
-            network.nodes[row['to']]['Description'] = 'Phosphosite'
-            network.nodes[row['from']]['Description'] = 'Kinase'
-            network.nodes[row['to']]['p_value'] = logFC[row['to']]
-        network.set_kinase_index()
-        network.set_unmissing_neighbors_and_children()
-        network.get_depths_for_all_nodes()
-    else: # use default network
-        df = pd.read_csv('data/KSEA_dataset_processed.csv')
-        df = df[df['to'].isin(logFC.keys())].reset_index(drop=True)
-        network = nx.from_pandas_edgelist(df, source="from", target="to", create_using=my_network)
-        for index, row in df.iterrows():
-            network.nodes[row['to']]['Description'] = 'Phosphosite'
-            network.nodes[row['to']]['p_value'] = logFC[row['to']]
-            network.nodes[row['from']]['Description'] = 'Kinase'
-        network.set_kinase_index()
-        network.set_unmissing_neighbors_and_children()
-        network.get_depths_for_all_nodes()
-
-    # get background mean and std
-    logFC = list(logFC.values())
-    background_mean = np.mean(logFC)
-    background_std = np.std(logFC)
-
-    kinase_scores = {}
-    p_values = {}
-    for kinase in network.get_kinase():
-        kinase_scores[kinase] = 0
-        num = 0
-        for node in network.get_unmissing_children(kinase):
-            kinase_scores[kinase] += network.nodes[node]['p_value']
-            num += 1
-        kinase_scores[kinase] /= num
-        kinase_scores[kinase] = (kinase_scores[kinase] - background_mean) / (background_std/np.sqrt(num))
-        p_value = 2 * (1 - stats.norm.cdf(abs(kinase_scores[kinase])))
-        p_values[kinase] = p_value
-
-    # get top 10 kinases
-    top_kinases = sorted(kinase_scores.items(), key=lambda x: x[1], reverse=False)[:10]
-    top_kinases = [kinase for kinase, score in top_kinases]
-    results_df = pd.DataFrame({
-        'Name': list(p_values.keys()),
-        'p_value': list(p_values.values()),
-        'Lower Bound': list(map(lambda x:-x, list(p_values.values())))
-    })
-
-    # print the kinases with p_value < 0.05
-    # print(BH_(p_values, 0.05))
-
-    return results_df, top_kinases
 
 def wald_interval(network, rejection_set, u, alpha):
     def nll_wrap(vec):                        # torch.autograd.functional.hessian needs function interface
@@ -130,7 +54,6 @@ def log_likelihood(network, rejection_set, p):
     for node in network.nodes():
         if 'p_value' in network.nodes[node]:
             reject = node in rejection_set
-            # ancestors_index = torch.tensor(network.get_kinase_ancestors_index(node))
             parents_index = torch.tensor(network.get_kinase_parents_index(node))
             if len(parents_index) == 0:
                 # Handle nodes with no kinase ancestors
