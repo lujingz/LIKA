@@ -1,335 +1,465 @@
-'''
-Do simulation experiments for the method
-'''
-from method import *
-from pipeline import pipeline
-from utils import *
+"""
+Simulation experiments for LIKA.
+
+The default command repeats all three simulations over deterministic random
+seeds, writes per-kinase p-values/rankings, and summarizes precision@k and
+recall@k as used in the manuscript.
+"""
+
+import argparse
+import os
+from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/lika-matplotlib")
+os.environ.setdefault("XDG_CACHE_HOME", "/tmp/lika-cache")
+Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
+Path(os.environ["XDG_CACHE_HOME"]).mkdir(parents=True, exist_ok=True)
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import networkx as nx
+import numpy as np
+import pandas as pd
+from scipy import stats
+
+from method import get_intensity_columns
+from pipeline import (
+    DEFAULT_ALPHA,
+    DEFAULT_P_VALUE_RANK_FLOOR,
+    new_pipeline,
+    pipeline,
+    resolve_p_value_rank_floor,
+)
+from utils import my_network
+
+
+DEFAULT_RUNS = 100
+DEFAULT_BASE_SEED = 20260603
+DEFAULT_MAX_K = 10
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Repeat the three LIKA simulation experiments and save per-kinase "
+            "rankings plus precision@k/recall@k summaries."
+        )
+    )
+    parser.add_argument("--runs", type=int, default=DEFAULT_RUNS, help="Number of runs per experiment.")
+    parser.add_argument(
+        "--base-seed",
+        type=int,
+        default=DEFAULT_BASE_SEED,
+        help="Base seed used to derive deterministic run seeds.",
+    )
+    parser.add_argument("--output-dir", default="results", help="Directory for output CSV and PNG files.")
+    parser.add_argument("--max-k", type=int, default=DEFAULT_MAX_K, help="Largest k for precision@k/recall@k.")
+    parser.add_argument("--no-plots", action="store_true", help="Skip precision/recall PNG generation.")
+    return parser.parse_args()
+
 
 def KSEA(intensity_df, log_transform=False, network_df=None):
     # Get p-values
     logFC = {}
+    intensity_df = intensity_df.copy()
     intensity_df.columns = intensity_df.columns.str.lower()
     intensity_cols = get_intensity_columns(intensity_df)
 
     if log_transform:
-        # 0 means missing
         intensity_df['mean'] = intensity_df[intensity_cols].apply(lambda x: x[x != 0].mean(), axis=1)
-        intensity_df['mean'] = np.log2(intensity_df['mean']+1e-6)
+        intensity_df['mean'] = np.log2(intensity_df['mean'] + 1e-6)
     else:
         intensity_df['mean'] = intensity_df[intensity_cols].mean(axis=1)
-    
 
-    for index, row in intensity_df.iterrows():
+    for _, row in intensity_df.iterrows():
         if row['name'] in logFC:
             logFC[row['name']] += row['mean'] * (2 * row['group'] - 1)
         else:
             logFC[row['name']] = row['mean'] * (2 * row['group'] - 1)
-    logFC = {k:v for k,v in logFC.items() if not np.isnan(v)}
+    logFC = {key: value for key, value in logFC.items() if not np.isnan(value)}
 
-    # Get network data # TODO: allow the user to include more netwokrs than kinase-phosphosite network
-    if network_df is not None: # self-defined network
+    if network_df is not None:
+        network_df = network_df.copy()
         network_df.columns = network_df.columns.str.lower()
+        network_df = network_df[network_df['to'].isin(logFC.keys())].reset_index(drop=True)
         network = nx.from_pandas_edgelist(network_df, source="from", target="to", create_using=my_network)
-        for index, row in network_df.iterrows():
-            network.nodes[row['to']]['Description'] = 'Phosphosite'
-            network.nodes[row['from']]['Description'] = 'Kinase'
-            network.nodes[row['to']]['p_value'] = logFC[row['to']]
-        network.set_kinase_index()
-        network.set_unmissing_neighbors_and_children()
-    else: # use default network
-        df = pd.read_csv('data/KSEA_dataset_processed.csv')
-        df = df[df['to'].isin(logFC.keys())].reset_index(drop=True)
-        network = nx.from_pandas_edgelist(df, source="from", target="to", create_using=my_network)
-        for index, row in df.iterrows():
-            network.nodes[row['to']]['Description'] = 'Phosphosite'
-            network.nodes[row['to']]['p_value'] = logFC[row['to']]
-            network.nodes[row['from']]['Description'] = 'Kinase'
-        network.set_kinase_index()
-        network.set_unmissing_neighbors_and_children()
+        edge_df = network_df
+    else:
+        edge_df = pd.read_csv('data/KSEA_dataset_processed.csv')
+        edge_df.columns = edge_df.columns.str.lower()
+        edge_df = edge_df[edge_df['to'].isin(logFC.keys())].reset_index(drop=True)
+        network = nx.from_pandas_edgelist(edge_df, source="from", target="to", create_using=my_network)
 
-    # get background mean and std
-    logFC = list(logFC.values())
-    background_mean = np.mean(logFC)
-    background_std = np.std(logFC)
+    for _, row in edge_df.iterrows():
+        network.nodes[row['to']]['Description'] = 'Phosphosite'
+        network.nodes[row['from']]['Description'] = 'Kinase'
+        network.nodes[row['to']]['p_value'] = logFC[row['to']]
+
+    network.set_kinase_index()
+    network.set_unmissing_neighbors_and_children()
+
+    background_values = list(logFC.values())
+    background_mean = np.mean(background_values)
+    background_std = np.std(background_values)
 
     kinase_scores = {}
     p_values = {}
     for kinase in network.get_kinase():
-        kinase_scores[kinase] = 0
-        num = 0
-        for node in network.get_unmissing_children(kinase):
-            kinase_scores[kinase] += network.nodes[node]['p_value']
-            num += 1
-        kinase_scores[kinase] /= num
-        kinase_scores[kinase] = (kinase_scores[kinase] - background_mean) / (background_std/np.sqrt(num))
-        p_value = 2 * (1 - stats.norm.cdf(abs(kinase_scores[kinase])))
-        p_values[kinase] = p_value
+        children = network.get_unmissing_children(kinase)
+        if not children:
+            continue
+        kinase_scores[kinase] = sum(network.nodes[node]['p_value'] for node in children) / len(children)
+        kinase_scores[kinase] = (kinase_scores[kinase] - background_mean) / (background_std / np.sqrt(len(children)))
+        p_values[kinase] = 2 * (1 - stats.norm.cdf(abs(kinase_scores[kinase])))
 
-    # get top 10 kinases
-    top_kinases = sorted(kinase_scores.items(), key=lambda x: x[1], reverse=False)[:10]
-    top_kinases = [kinase for kinase, score in top_kinases]
     results_df = pd.DataFrame({
         'Name': list(p_values.keys()),
         'p_value': list(p_values.values()),
-        'Lower Bound': list(map(lambda x:-x, list(p_values.values())))
+        'KSEA_score': [kinase_scores[name] for name in p_values],
     })
-
-    # print the kinases with p_value < 0.05
-    # print(BH_(p_values, 0.05))
-
+    top_kinases = (
+        results_df.sort_values(['p_value', 'Name'], ascending=[True, True])
+        .head(10)['Name']
+        .tolist()
+    )
     return results_df, top_kinases
 
-def simulation_experiment_1():
-    '''
-    Example 1: all substrates are only affected by one kinase
-    '''
-    from_ = list(map(lambda x:'K'+str(x//10), [i for i in range(100)])) # 10 kinases in total, each have 10 substrates
-    to_ = list(map(lambda x:str(x), [i for i in range(100)])) # 100 substrates in total
+
+def experiment_1_inputs(seed):
+    rng = np.random.RandomState(seed)
     network_df = pd.DataFrame({
-        'from': from_,
-        'to': to_
+        "from": [f"K{x // 10}" for x in range(100)],
+        "to": [str(x) for x in range(100)],
     })
-    # Generate simulation data
-    n = 5  # number of intensity columns
-    np.random.seed(42)  # for reproducibility
-    data = []
-    for name in range(100):
-        # Group 0 line - always sample from N(0,1)
-        row_group0 = {'name': str(name), 'group': 0}
-        intensities_group0 = np.random.normal(0, 1, n)
-        for i in range(n):
-            row_group0[f'intensity_{i}'] = intensities_group0[i]
-        data.append(row_group0)
-        
-        # Group 1 line - sample based on name value
-        row_group1 = {'name': str(name), 'group': 1}
-        if int(name) < 20:
-            # Sample from N(1,1) for names < 20
-            intensities_group1 = np.random.normal(2, 1, n)
-        else:
-            # Sample from N(0,1) for names >= 20
-            intensities_group1 = np.random.normal(0, 1, n)
-        
-        for i in range(n):
-            row_group1[f'intensity_{i}'] = intensities_group1[i]
-        data.append(row_group1)
-    print('abnormal kinases: ', [0,1])
-    intensity_df = pd.DataFrame(data)
-    results_df, top_kinases = KSEA(intensity_df, log_transform=False, network_df=network_df)
-    results_df.to_csv('results/simulation_experiment_1_KSEA.csv', index=False)
-    # plot_top_kinases(results_df, top_kinases)
-    # Run pipeline
-    network, rejection_set, results_df, top_kinases, _ = pipeline(intensity_df, log_transform=False, network_df=network_df, CI=0.2)
-    visualize_rejection(network, rejection_set, 'Simulation Experiment 1', None)
-    plot_top_kinases(results_df, top_kinases)
-    results_df.to_csv('results/simulation_experiment_1_LIKA.csv', index=False)
-    
-def simulation_experiment_3():
-    '''
-    Example 3: substrates can be affected by multiple kinases (shared nodes)
-    - Parents (kinases) have different numbers of children (substrates)
-    - Children (substrates) have different numbers of parents (kinases)
-    - Some parents are randomly selected to be 'abnormal'
-    '''
-    np.random.seed(42)  # for reproducibility
-    
-    # Create a more complex network structure
-    # 8 kinases with varying numbers of substrates
-    kinase_substrate_counts = [20, 20, 15, 15, 12, 11, 10, 8, 6, 4, 3, 2, 1]  # number of substrates per kinase
-    total_substrates = 40  # total number of unique substrates
-    
-    # Create network connections
+
+    rows = []
+    for substrate in range(100):
+        row_group0 = {"name": str(substrate), "group": 0}
+        for i, value in enumerate(rng.normal(0, 1, 5)):
+            row_group0[f"intensity_{i}"] = value
+        rows.append(row_group0)
+
+        row_group1 = {"name": str(substrate), "group": 1}
+        mean = 2 if substrate < 20 else 0
+        for i, value in enumerate(rng.normal(mean, 1, 5)):
+            row_group1[f"intensity_{i}"] = value
+        rows.append(row_group1)
+
+    return network_df, pd.DataFrame(rows), ["K0", "K1"]
+
+
+def experiment_2_inputs(seed):
+    rng = np.random.RandomState(seed)
+    kinase_substrate_counts = [20, 20, 15, 15, 12, 11, 10, 8, 6, 4, 3, 2, 1]
+    total_substrates = sum(kinase_substrate_counts)
+    abnormal_kinases = ["K0", "K2", "K5", "K8"]
+
     from_ = []
     to_ = []
-    
-    # For each kinase, randomly assign substrates (allowing overlap)
-    substrate_pool = list(range(total_substrates))
-    
-    for kinase_idx, substrate_count in enumerate(kinase_substrate_counts):
-        kinase_name = f'K{kinase_idx}'
-        # Randomly select substrates for this kinase (with replacement possible across kinases)
-        selected_substrates = np.random.choice(substrate_pool, size=substrate_count, replace=False)
-        
-        for substrate_idx in selected_substrates:
-            from_.append(kinase_name)
-            to_.append(str(substrate_idx))
-    
-    network_df = pd.DataFrame({
-        'from': from_,
-        'to': to_
-    })
-    
-    abnormal_kinases = ['K0', 'K2', 'K5', 'K8']
-    print(f"Abnormal kinases: {abnormal_kinases}")
-    
-    # Get all substrates affected by abnormal kinases
-    abnormal_substrates = set()
-    for substrate in substrate_pool:
-        father_kinases = set(network_df[network_df['to'] == str(substrate)]['from'])
-        if len(father_kinases) > 0:
-            p = len(father_kinases & set(abnormal_kinases)) / len(father_kinases)
-            if np.random.uniform(0, 1) < p:
-                abnormal_substrates.add(str(substrate))
-    
-    # print(f"Substrates affected by abnormal kinases: {sorted([int(x) for x in abnormal_substrates])}")
-    
-    # Generate simulation data
-    n = 5  # number of intensity columns
-    data = []
-    
-    for substrate_idx in range(total_substrates):
-        substrate_name = str(substrate_idx)
-        is_abnormal = substrate_name in abnormal_substrates
-        
-        # Group 0 line - always sample from N(0,1)
-        row_group0 = {'name': substrate_name, 'group': 0}
-        intensities_group0 = np.random.normal(0, 1, n)
-        for i in range(n):
-            row_group0[f'intensity_{i}'] = intensities_group0[i]
-        data.append(row_group0)
-        
-        # Group 1 line - sample based on whether substrate is affected by abnormal kinases
-        row_group1 = {'name': substrate_name, 'group': 1}
-        if is_abnormal:
-            # Sample from N(2,1) for substrates affected by abnormal kinases
-            intensities_group1 = np.random.normal(2, 1, n)
-        else:
-            # Sample from N(0,1) for normal substrates
-            intensities_group1 = np.random.normal(0, 1, n)
-        
-        for i in range(n):
-            row_group1[f'intensity_{i}'] = intensities_group1[i]
-        data.append(row_group1)
-
-    intensity_df = pd.DataFrame(data)
-    
-    print("\n=== KSEA Method Results ===")
-    results_df, top_kinases = KSEA(intensity_df, log_transform=False, network_df=network_df)
-    # plot_top_kinases(results_df, top_kinases)
-    results_df.to_csv('results/simulation_experiment_3_KSEA.csv', index=False)
-
-    
-    print("\n=== Pipeline Method Results ===")
-    # Run pipeline
-    network, rejection_set, results_df, top_kinases, _ = pipeline(intensity_df, log_transform=False, network_df=network_df, CI=0.2)
-    visualize_rejection(network, rejection_set, 'Simulation Experiment 2', None)
-    plot_top_kinases(results_df, top_kinases)
-    results_df.to_csv('results/simulation_experiment_3_LIKA.csv', index=False)
-
-    
-    return network_df, intensity_df, abnormal_kinases 
-
-def simulation_experiment_2():
-    '''
-    Example 2: kinases have non-overlapping substrates but varying numbers of substrates
-    - Each substrate belongs to exactly one kinase (no sharing)
-    - Different kinases have different numbers of substrates
-    - Some kinases are randomly selected to be 'abnormal'
-    '''
-    np.random.seed(42)  # for reproducibility
-    
-    # Create kinases with varying numbers of substrates (non-overlapping)
-    kinase_substrate_counts = [20, 20, 15, 15, 12, 11, 10, 8, 6, 4, 3, 2, 1]  # number of substrates per kinase
-    total_substrates = sum(kinase_substrate_counts)  # total number of unique substrates
-    
-    print(f"Total kinases: {len(kinase_substrate_counts)}")
-    print(f"Substrates per kinase: {kinase_substrate_counts}")
-    print(f"Total substrates: {total_substrates}")
-    
-    # Create network connections (non-overlapping assignment)
-    from_ = []
-    to_ = []
-    
     substrate_idx = 0
     for kinase_idx, substrate_count in enumerate(kinase_substrate_counts):
-        kinase_name = f'K{kinase_idx}'
-        
-        # Assign consecutive substrates to this kinase (no overlap)
         for _ in range(substrate_count):
-            from_.append(kinase_name)
+            from_.append(f"K{kinase_idx}")
             to_.append(str(substrate_idx))
             substrate_idx += 1
-    
-    network_df = pd.DataFrame({
-        'from': from_,
-        'to': to_
-    })
-    
-    abnormal_kinases = ['K0', 'K2', 'K5', 'K8']
-    print(f"\nAbnormal kinases: {abnormal_kinases}")
-    
-    # Get all substrates affected by abnormal kinases
+
+    network_df = pd.DataFrame({"from": from_, "to": to_})
+
     abnormal_substrates = set()
     for substrate in range(total_substrates):
-        father_kinases = set(network_df[network_df['to'] == str(substrate)]['from'])
-        if len(father_kinases) > 0:
-            p = len(father_kinases & set(abnormal_kinases)) / len(father_kinases)
-            if np.random.uniform(0, 1) < p:
+        parent_kinases = set(network_df[network_df["to"] == str(substrate)]["from"])
+        if parent_kinases:
+            probability = len(parent_kinases & set(abnormal_kinases)) / len(parent_kinases)
+            if rng.uniform(0, 1) < probability:
                 abnormal_substrates.add(str(substrate))
-    print(f"Number of substrates affected by abnormal kinases: {len(abnormal_substrates)}")
-    
-    # Show which kinase sizes are abnormal
-    abnormal_kinase_sizes = []
-    for kinase in abnormal_kinases:
-        size = len(network_df[network_df['from'] == kinase])
-        abnormal_kinase_sizes.append(size)
-    print(f"Sizes of abnormal kinases: {abnormal_kinase_sizes}")
-    
-    # Generate simulation data
-    n = 5  # number of intensity columns
-    data = []
-    
-    for substrate_idx in range(total_substrates):
-        substrate_name = str(substrate_idx)
-        is_abnormal = substrate_name in abnormal_substrates
-        
-        # Group 0 line - always sample from N(0,1)
-        row_group0 = {'name': substrate_name, 'group': 0}
-        intensities_group0 = np.random.normal(0, 1, n)
-        for i in range(n):
-            row_group0[f'intensity_{i}'] = intensities_group0[i]
-        data.append(row_group0)
-        
-        # Group 1 line - sample based on whether substrate is affected by abnormal kinases
-        row_group1 = {'name': substrate_name, 'group': 1}
-        if is_abnormal:
-            # Sample from N(2,1) for substrates affected by abnormal kinases
-            intensities_group1 = np.random.normal(2, 1, n)
-        else:
-            # Sample from N(0,1) for normal substrates
-            intensities_group1 = np.random.normal(0, 1, n)
-        
-        for i in range(n):
-            row_group1[f'intensity_{i}'] = intensities_group1[i]
-        data.append(row_group1)
 
-    intensity_df = pd.DataFrame(data)
-    
-    print("\n=== KSEA Method Results ===")
-    results_df, top_kinases = KSEA(intensity_df, log_transform=False, network_df=network_df)
-    plot_top_kinases(results_df, top_kinases)
-    results_df.to_csv('results/simulation_experiment_2_KSEA.csv', index=False)
-    
-    print("\n=== Pipeline Method Results ===")
-    # Run pipeline
-    network, rejection_set, results_df, top_kinases, _ = pipeline(intensity_df, log_transform=False, network_df=network_df, CI=0.2)
-    visualize_rejection(network, rejection_set, 'Simulation Experiment 3', None)
-    plot_top_kinases(results_df, top_kinases)
-    results_df.to_csv('results/simulation_experiment_2_LIKA.csv', index=False)
-    
+    rows = []
+    for substrate in range(total_substrates):
+        substrate_name = str(substrate)
+        row_group0 = {"name": substrate_name, "group": 0}
+        for i, value in enumerate(rng.normal(0, 1, 5)):
+            row_group0[f"intensity_{i}"] = value
+        rows.append(row_group0)
+
+        row_group1 = {"name": substrate_name, "group": 1}
+        mean = 2 if substrate_name in abnormal_substrates else 0
+        for i, value in enumerate(rng.normal(mean, 1, 5)):
+            row_group1[f"intensity_{i}"] = value
+        rows.append(row_group1)
+
+    return network_df, pd.DataFrame(rows), abnormal_kinases
+
+
+def experiment_3_inputs(seed):
+    rng = np.random.RandomState(seed)
+    kinase_substrate_counts = [20, 20, 15, 15, 12, 11, 10, 8, 6, 4, 3, 2, 1]
+    total_substrates = 40
+    abnormal_kinases = ["K0", "K2", "K5", "K8"]
+
+    from_ = []
+    to_ = []
+    substrate_pool = list(range(total_substrates))
+    for kinase_idx, substrate_count in enumerate(kinase_substrate_counts):
+        selected_substrates = rng.choice(substrate_pool, size=substrate_count, replace=False)
+        for substrate in selected_substrates:
+            from_.append(f"K{kinase_idx}")
+            to_.append(str(substrate))
+
+    network_df = pd.DataFrame({"from": from_, "to": to_})
+
+    abnormal_substrates = set()
+    for substrate in substrate_pool:
+        parent_kinases = set(network_df[network_df["to"] == str(substrate)]["from"])
+        if parent_kinases:
+            probability = len(parent_kinases & set(abnormal_kinases)) / len(parent_kinases)
+            if rng.uniform(0, 1) < probability:
+                abnormal_substrates.add(str(substrate))
+
+    rows = []
+    for substrate in range(total_substrates):
+        substrate_name = str(substrate)
+        row_group0 = {"name": substrate_name, "group": 0}
+        for i, value in enumerate(rng.normal(0, 1, 5)):
+            row_group0[f"intensity_{i}"] = value
+        rows.append(row_group0)
+
+        row_group1 = {"name": substrate_name, "group": 1}
+        mean = 2 if substrate_name in abnormal_substrates else 0
+        for i, value in enumerate(rng.normal(mean, 1, 5)):
+            row_group1[f"intensity_{i}"] = value
+        rows.append(row_group1)
+
+    return network_df, pd.DataFrame(rows), abnormal_kinases
+
+
+def substrate_metrics(network_df):
+    graph = nx.from_pandas_edgelist(
+        network_df,
+        source="from",
+        target="to",
+        create_using=my_network,
+    )
+
+    rows = []
+    for kinase in sorted(network_df["from"].unique()):
+        children = list(graph.successors(kinase))
+        influence_score = sum(1.0 / graph.in_degree(child) for child in children)
+        rows.append({
+            "Name": kinase,
+            "number_of_substrates": len(children),
+            "number_of_efficient_substrates": influence_score,
+            "LIKA_influence_score": influence_score,
+        })
+    return pd.DataFrame(rows)
+
+
+def add_rankings(df, alpha=DEFAULT_ALPHA, p_value_rank_floor=DEFAULT_P_VALUE_RANK_FLOOR):
+    df = df.copy()
+    rank_floor = resolve_p_value_rank_floor(p_value_rank_floor, alpha, df["LIKA_p_value"].notna().sum())
+    df["LIKA_ranking_p_value"] = df["LIKA_p_value"].clip(lower=rank_floor)
+
+    lika_sorted = df.sort_values(
+        ["LIKA_ranking_p_value", "LIKA_influence_score", "Name"],
+        ascending=[True, False, True],
+        na_position="last",
+    )
+    df["LIKA_ranking"] = pd.NA
+    df.loc[lika_sorted.index, "LIKA_ranking"] = range(1, len(lika_sorted) + 1)
+
+    ksea_sorted = df.sort_values(["KSEA_p_value", "Name"], ascending=[True, True], na_position="last")
+    df["KSEA_ranking"] = pd.NA
+    df.loc[ksea_sorted.index, "KSEA_ranking"] = range(1, len(ksea_sorted) + 1)
+
+    df["LIKA_ranking"] = df["LIKA_ranking"].astype("Int64")
+    df["KSEA_ranking"] = df["KSEA_ranking"].astype("Int64")
+    return df
+
+
+def run_one_experiment(experiment_number, input_fn, runs, base_seed):
+    all_rows = []
+
+    for run_index in range(runs):
+        seed = base_seed + experiment_number * 100_000 + run_index
+        network_df, intensity_df, ground_truth = input_fn(seed)
+
+        ksea_df, _ = KSEA(intensity_df.copy(), log_transform=False, network_df=network_df.copy())
+        lika_p_values, lika_test_statistics = new_pipeline(
+            intensity_df.copy(),
+            log_transform=False,
+            network_df=network_df.copy(),
+        )
+
+        lika_df = pd.DataFrame({
+            "Name": list(lika_p_values.keys()),
+            "LIKA_p_value": list(lika_p_values.values()),
+            "LIKA_test_statistics": [lika_test_statistics[name] for name in lika_p_values],
+        })
+
+        combined = (
+            substrate_metrics(network_df)
+            .merge(ksea_df[["Name", "p_value"]].rename(columns={"p_value": "KSEA_p_value"}), on="Name", how="left")
+            .merge(lika_df, on="Name", how="left")
+        )
+        combined = add_rankings(combined)
+        combined["experiment"] = experiment_number
+        combined["run_index"] = run_index + 1
+        combined["seed"] = seed
+        combined["is_ground_truth"] = combined["Name"].isin(ground_truth)
+
+        output_columns = [
+            "experiment",
+            "run_index",
+            "seed",
+            "Name",
+            "is_ground_truth",
+            "KSEA_p_value",
+            "KSEA_ranking",
+            "LIKA_p_value",
+            "LIKA_ranking_p_value",
+            "LIKA_test_statistics",
+            "LIKA_ranking",
+            "LIKA_influence_score",
+            "number_of_substrates",
+            "number_of_efficient_substrates",
+        ]
+        all_rows.append(combined[output_columns])
+        print(f"Experiment {experiment_number}, run {run_index + 1}/{runs}, seed {seed}")
+
+    return pd.concat(all_rows, ignore_index=True)
+
+
+def precision_recall_at_k(ranking_df, max_k=DEFAULT_MAX_K):
+    rows = []
+    for (experiment, run_index), run_df in ranking_df.groupby(["experiment", "run_index"]):
+        ground_truth_count = int(run_df["is_ground_truth"].sum())
+        for method in ("LIKA", "KSEA"):
+            rank_col = f"{method}_ranking"
+            method_df = run_df.dropna(subset=[rank_col]).sort_values(rank_col)
+            for k in range(1, min(max_k, len(method_df)) + 1):
+                selected = method_df.head(k)
+                hits = int(selected["is_ground_truth"].sum())
+                rows.append({
+                    "experiment": experiment,
+                    "run_index": run_index,
+                    "method": method,
+                    "k": k,
+                    "ground_truth_count": ground_truth_count,
+                    "precision_at_k": hits / k,
+                    "recall_at_k": hits / ground_truth_count if ground_truth_count else np.nan,
+                })
+    return pd.DataFrame(rows)
+
+
+def summarize_precision_recall(metric_df):
+    return (
+        metric_df
+        .groupby(["experiment", "method", "k", "ground_truth_count"], as_index=False)
+        .agg(
+            precision_at_k_mean=("precision_at_k", "mean"),
+            precision_at_k_sd=("precision_at_k", "std"),
+            recall_at_k_mean=("recall_at_k", "mean"),
+            recall_at_k_sd=("recall_at_k", "std"),
+        )
+    )
+
+
+def plot_precision_recall_summary(summary_df, output_path):
+    experiments = sorted(summary_df["experiment"].unique())
+    fig, axes = plt.subplots(len(experiments), 2, figsize=(10, 3.3 * len(experiments)), sharex=True, sharey=True)
+    if len(experiments) == 1:
+        axes = np.array([axes])
+
+    colors = {"LIKA": "#0072B2", "KSEA": "#D55E00"}
+    for row_idx, experiment in enumerate(experiments):
+        experiment_df = summary_df[summary_df["experiment"] == experiment]
+        ground_truth_count = int(experiment_df["ground_truth_count"].iloc[0])
+
+        for col_idx, metric in enumerate(("precision_at_k_mean", "recall_at_k_mean")):
+            ax = axes[row_idx, col_idx]
+            for method in ("LIKA", "KSEA"):
+                method_df = experiment_df[experiment_df["method"] == method].sort_values("k")
+                ax.plot(method_df["k"], method_df[metric], marker="o", linewidth=1.8, label=method, color=colors[method])
+            ax.axvline(ground_truth_count, color="black", linestyle="--", linewidth=1, alpha=0.7)
+            ax.set_ylim(-0.02, 1.02)
+            ax.set_title(f"Simulation Experiment {experiment}")
+            ax.set_xlabel("k")
+            ax.set_ylabel("Precision@k" if metric.startswith("precision") else "Recall@k")
+            ax.spines[["top", "right"]].set_visible(False)
+            if row_idx == 0 and col_idx == 0:
+                ax.legend(frameon=False)
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
+
+
+def run_single_experiment(experiment_number, input_fn, seed=42, output_dir="results"):
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    network_df, intensity_df, abnormal_kinases = input_fn(seed)
+
+    ksea_df, _ = KSEA(intensity_df, log_transform=False, network_df=network_df)
+    ksea_df.to_csv(output_dir / f"simulation_experiment_{experiment_number}_KSEA.csv", index=False)
+
+    _, _, lika_df, _, _ = pipeline(intensity_df, log_transform=False, network_df=network_df)
+    lika_df.to_csv(output_dir / f"simulation_experiment_{experiment_number}_LIKA.csv", index=False)
     return network_df, intensity_df, abnormal_kinases
 
 
+def simulation_experiment_1():
+    return run_single_experiment(1, experiment_1_inputs)
+
+
+def simulation_experiment_2():
+    return run_single_experiment(2, experiment_2_inputs)
+
+
+def simulation_experiment_3():
+    return run_single_experiment(3, experiment_3_inputs)
+
+
+def main():
+    args = parse_args()
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    experiments = {
+        1: experiment_1_inputs,
+        2: experiment_2_inputs,
+        3: experiment_3_inputs,
+    }
+
+    ranking_outputs = []
+    for experiment_number, input_fn in experiments.items():
+        result_df = run_one_experiment(
+            experiment_number,
+            input_fn,
+            runs=args.runs,
+            base_seed=args.base_seed,
+        )
+        ranking_outputs.append(result_df)
+        output_path = output_dir / f"simulation_experiment_{experiment_number}_pvalue_rankings_{args.runs}runs.csv"
+        result_df.to_csv(output_path, index=False)
+        print(f"Wrote {output_path}")
+
+    all_rankings = pd.concat(ranking_outputs, ignore_index=True)
+    metric_df = precision_recall_at_k(all_rankings, max_k=args.max_k)
+    metric_path = output_dir / f"simulation_precision_recall_by_run_{args.runs}runs.csv"
+    metric_df.to_csv(metric_path, index=False)
+    print(f"Wrote {metric_path}")
+
+    summary_df = summarize_precision_recall(metric_df)
+    summary_path = output_dir / f"simulation_precision_recall_summary_{args.runs}runs.csv"
+    summary_df.to_csv(summary_path, index=False)
+    print(f"Wrote {summary_path}")
+
+    if not args.no_plots:
+        plot_path = output_dir / f"simulation_precision_recall_summary_{args.runs}runs.png"
+        plot_precision_recall_summary(summary_df, plot_path)
+        print(f"Wrote {plot_path}")
+
+
 if __name__ == "__main__":
-    print("=== Running Simulation Experiment 1 ===")
-    simulation_experiment_1()
-    
-    print("\n" + "="*50)
-    print("=== Running Simulation Experiment 2 ===")
-    network_df, intensity_df, abnormal_kinases = simulation_experiment_2()
-
-
-    print("\n" + "="*50)
-    print("=== Running Simulation Experiment 3 ===")
-    network_df3, intensity_df3, abnormal_kinases3 = simulation_experiment_3()
-
+    main()

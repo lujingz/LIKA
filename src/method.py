@@ -174,7 +174,8 @@ def profile_likelihood_interval(network, rejection_set, u_hat, param_idx, alpha,
     
     return lower_bound, upper_bound
 
-def get_kinase_ranking_new(network, rejection_set):
+def get_kinase_ranking_new(network, rejection_set, p_fixed=0.0):
+    p_fixed = float(np.clip(p_fixed, 1e-8, 1 - 1e-8))
     kinases = network.get_kinase()
     
     # Initialize the parameters 
@@ -255,14 +256,15 @@ def get_kinase_ranking_new(network, rejection_set):
         """
         return (profile_nll_at_fixed_p(p_fixed, param_idx)) + ll_max
     
-    # Find confidence interval bounds
     new_p_values = {}
     test_statistics = {}
 
     for i in range(len(kinases)):
-        new_p_values[kinases[i]] = 1-chi2.cdf(2*profile_diff(0, i), df=1)
-        test_statistics[kinases[i]] = profile_diff(0, i)
-        # print(f"p_value for {kinases[i]}: {new_p_values[kinases[i]]}; profile_diff: {profile_diff(0, i)}")
+        likelihood_ratio_statistic = max(0.0, 2 * profile_diff(p_fixed, i))
+        signed_root = np.sign(p_hat[i].item() - p_fixed) * np.sqrt(likelihood_ratio_statistic)
+        new_p_values[kinases[i]] = 1 - norm.cdf(signed_root)
+        test_statistics[kinases[i]] = likelihood_ratio_statistic
+        # print(f"p_value for {kinases[i]}: {new_p_values[kinases[i]]}; statistic: {likelihood_ratio_statistic}")
     return new_p_values, test_statistics  
         
 

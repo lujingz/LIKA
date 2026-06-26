@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+env/
+.env
+
+# Generated outputs
+results/
+*.log
+
+# Editor and notebook checkpoints
+.idea/
+.vscode/
+.ipynb_checkpoints/
+

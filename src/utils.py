@@ -223,12 +223,28 @@ class my_network(nx.DiGraph):
 def plot_top_kinases(results_df, top_kinases):
     '''plot the top kinases'''
     df = results_df[results_df['Name'].isin(top_kinases)]
-    df = df.sort_values(by='Lower Bound', ascending=False)
+    if {'influence_score', 'p_value'}.issubset(df.columns):
+        rank_col = 'LIKA_rank' if 'LIKA_rank' in df.columns else 'ranking_p_value'
+        df = df.sort_values(by=rank_col)
 
-    fig, ax = plt.subplots(figsize=(6, 8))
-    bars = ax.barh(df['Name'], df['Lower Bound'])
+        fig, ax = plt.subplots(figsize=(7, 8))
+        color_values = -np.log10(df['p_value'].replace(0, np.nextafter(0, 1)))
+        color_scale = color_values.max()
+        if not np.isfinite(color_scale) or color_scale <= 0:
+            color_scale = 1.0
+        bars = ax.barh(df['Name'], df['influence_score'], color=plt.cm.viridis(color_values / color_scale))
 
-    ax.set_xlabel("LIKA Score", fontsize=12)
+        ax.set_xlabel("LIKA Influence Score", fontsize=12)
+        sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=0, vmax=color_scale))
+        sm.set_array([])
+        fig.colorbar(sm, ax=ax, label='-log10(p-value)')
+    else:
+        df = df.sort_values(by='Lower Bound', ascending=False)
+
+        fig, ax = plt.subplots(figsize=(6, 8))
+        bars = ax.barh(df['Name'], df['Lower Bound'])
+        ax.set_xlabel("LIKA Score", fontsize=12)
+
     ax.invert_yaxis()  # highest score on top
     ax.spines[['top', 'right']].set_visible(False)
     plt.tight_layout()
