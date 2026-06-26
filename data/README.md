@@ -6,7 +6,7 @@ This folder contains processed inputs and source/support tables used by the LIKA
 
 - `KSEA_dataset_processed.csv`: two-column kinase-substrate edge list used by the LIKA pipeline. Columns are `from` kinase and `to` phosphosite.
 - `intensity_data_INKA.csv`: processed INKA cell-line phosphosite intensity table. The pipeline lower-cases columns at runtime; expected logical columns are `Name`, `Group`, and `intensity_*`.
-- `residual_data_Schizo.csv`: processed schizophrenia-control residual phosphosite table. Expected logical columns are `Name`, `Group`, and `Intensity_*`.
+- `residual_data_SCZ.csv`: processed schizophrenia-control residual phosphosite table. Expected logical columns are `Name`, `Group`, and `Intensity_*`.
 
 ## Source And Supporting Tables
 

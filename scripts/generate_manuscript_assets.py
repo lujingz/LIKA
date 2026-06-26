@@ -391,11 +391,11 @@ def main():
         audit_outputs()
     if args.tables:
         write_simulation_structure_table()
-        write_substrate_statistics(ROOT / "data" / "residual_data_Schizo.csv", SCZ_SUBSTRATE_TABLE, log_transform=False, include_all_substrates=False)
+        write_substrate_statistics(ROOT / "data" / "residual_data_SCZ.csv", SCZ_SUBSTRATE_TABLE, log_transform=False, include_all_substrates=False)
         write_substrate_statistics(ROOT / "data" / "intensity_data_INKA.csv", INKA_SUBSTRATE_TABLE, log_transform=True, include_all_substrates=True)
         if args.recompute_rankings:
             write_kinase_ranking_table(ROOT / "data" / "intensity_data_INKA.csv", INKA_RANKING_TABLE, log_transform=True)
-            write_kinase_ranking_table(ROOT / "data" / "residual_data_Schizo.csv", SCZ_RANKING_TABLE, log_transform=False)
+            write_kinase_ranking_table(ROOT / "data" / "residual_data_SCZ.csv", SCZ_RANKING_TABLE, log_transform=False)
     if args.figures:
         generate_figures(include_figure3=args.include_figure3)
     if not any([args.audit, args.tables, args.figures]):

@@ -20,7 +20,7 @@ The processed input files used by the scripts are in `data/`:
 
 - `data/KSEA_dataset_processed.csv`: kinase-substrate network filtered from the KSEA resource.
 - `data/intensity_data_INKA.csv`: processed cell-line phosphoproteomics input.
-- `data/residual_data_Schizo.csv`: processed schizophrenia-control residual phosphosite data.
+- `data/residual_data_SCZ.csv`: processed schizophrenia-control residual phosphosite data.
 - `data/Network_Data_for_Schizo.csv`, `data/category.csv`, and `data/Kinase_Substrate_Dataset.csv`: supporting network/source tables.
 
 See `data/README.md` for the data file map and cleanup notes.

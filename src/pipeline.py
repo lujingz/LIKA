@@ -172,7 +172,7 @@ def pipeline_INKA():
     results_df.to_csv('results/INKA_results.csv', index=False)
 
 def pipeline_Schizo():
-    intensity_df = pd.read_csv('data/residual_data_Schizo.csv')
+    intensity_df = pd.read_csv('data/residual_data_SCZ.csv')
     network, rejection_set, results_df, top_kinases, p_values = pipeline(intensity_df, log_transform=False)
     with open('results/rejection_set_Schizo.txt', 'w') as f:
         f.write(','.join(rejection_set))
@@ -194,7 +194,7 @@ def stability_test_INKA():
             f.write(str(CI_list[i]) + ':' + ','.join(top_kinase_all[i]) + '\n')
 
 def stability_test_Schizo():
-    intensity_df = pd.read_csv('data/residual_data_Schizo.csv')
+    intensity_df = pd.read_csv('data/residual_data_SCZ.csv')
     top_kinase_all = []
     CI_list = [0.1, 0.2, 0.3, 0.4, 0.5]
     for CI in CI_list:

@@ -228,7 +228,7 @@ def main():
     )
     scz_rankings, scz_top = run_dataset(
         "SCZ",
-        ROOT / "data" / "residual_data_Schizo.csv",
+        ROOT / "data" / "residual_data_SCZ.csv",
         log_transform=False,
         fdr_levels=fdr_levels,
         top_n=args.top_n,
