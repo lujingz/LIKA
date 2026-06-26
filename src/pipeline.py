@@ -2,7 +2,6 @@ from method import *
 import pandas as pd
 import numpy as np
 from utils import *
-import json
 import networkx as nx
 
 DEFAULT_ALPHA = 0.05
@@ -159,53 +158,3 @@ def pipeline(intensity_df, log_transform=True, network_df=None, CI=None,
     top_kinases = results_df.head(top_n)['Name'].tolist()
 
     return network, rejection_set, results_df, top_kinases, p_values
-
-def pipeline_INKA():
-    intensity_df = pd.read_csv('data/intensity_data_INKA.csv')
-    network, rejection_set, results_df, top_kinases, p_values = pipeline(intensity_df)
-    with open('results/rejection_set_INKA.txt', 'w') as f:
-        f.write(','.join(rejection_set))
-    with open('results/INKA_p_values.json', 'w') as f:
-        json.dump(p_values, f, indent=2)
-    network.save_to_graphml('results/INKA_network.graphml')
-    plot_top_kinases(results_df, top_kinases)
-    results_df.to_csv('results/INKA_results.csv', index=False)
-
-def pipeline_Schizo():
-    intensity_df = pd.read_csv('data/residual_data_SCZ.csv')
-    network, rejection_set, results_df, top_kinases, p_values = pipeline(intensity_df, log_transform=False)
-    with open('results/rejection_set_Schizo.txt', 'w') as f:
-        f.write(','.join(rejection_set))
-    with open('results/Schizo_p_values.json', 'w') as f:
-        json.dump(p_values, f, indent=2)
-    network.save_to_graphml('results/Schizo_network.graphml')
-    plot_top_kinases(results_df, top_kinases)
-    results_df.to_csv('results/Schizo_results.csv', index=False)
-
-def stability_test_INKA():
-    intensity_df = pd.read_csv('data/intensity_data_INKA.csv')
-    top_kinase_all = []
-    CI_list = [0.1, 0.2, 0.3, 0.4, 0.5]
-    for CI in CI_list:
-        network, rejection_set, results_df, top_kinases, p_values = pipeline(intensity_df, CI=CI)
-        top_kinase_all.append(top_kinases)
-    with open('results/top_kinase_INKA.txt', 'w') as f:
-        for i in range(len(top_kinase_all)):
-            f.write(str(CI_list[i]) + ':' + ','.join(top_kinase_all[i]) + '\n')
-
-def stability_test_Schizo():
-    intensity_df = pd.read_csv('data/residual_data_SCZ.csv')
-    top_kinase_all = []
-    CI_list = [0.1, 0.2, 0.3, 0.4, 0.5]
-    for CI in CI_list:
-        network, rejection_set, results_df, top_kinases, p_values = pipeline(intensity_df, log_transform=False, CI=CI)
-        top_kinase_all.append(top_kinases)
-    with open('results/top_kinase_Schizo.txt', 'w') as f:
-        for i in range(len(top_kinase_all)):
-            f.write(str(CI_list[i]) + ':' + ','.join(top_kinase_all[i]) + '\n')
-
-if __name__ == "__main__":
-    # pipeline_INKA()
-    pipeline_Schizo()
-    # stability_test_INKA()
-    # stability_test_Schizo()

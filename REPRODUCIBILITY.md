@@ -18,36 +18,39 @@ The current `requirements.txt` was exported from a local conda environment. For 
 
 The processed input files used by the scripts are in `data/`:
 
-- `data/KSEA_dataset_processed.csv`: kinase-substrate network filtered from the KSEA resource.
+- `data/KSEA_dataset_processed.csv`: kinase-substrate network derived from the KSEA App website.
 - `data/intensity_data_INKA.csv`: processed cell-line phosphoproteomics input.
-- `data/residual_data_SCZ.csv`: processed schizophrenia-control residual phosphosite data.
-- `data/Network_Data_for_Schizo.csv`, `data/category.csv`, and `data/Kinase_Substrate_Dataset.csv`: supporting network/source tables.
+- `data/residual_data_SCZ.csv`: processed SCZ/control residual phosphosite data.
 
 See `data/README.md` for the data file map and cleanup notes.
 
 ## Main Analyses
 
-Run the schizophrenia pipeline:
+Run the SCZ/control pipeline:
 
 ```bash
-python src/pipeline.py
+python experiments/run_scz_pipeline.py
 ```
 
 This writes LIKA outputs under `results/`, including:
 
-- `results/Schizo_results.csv`
-- `results/Schizo_network.graphml`
-- `results/Schizo_p_values.json`
-- `results/rejection_set_Schizo.txt`
+- `results/SCZ_results.csv`
+- `results/SCZ_network.graphml`
+- `results/SCZ_p_values.json`
+- `results/rejection_set_SCZ.txt`
 
-To run the INKA cell-line pipeline instead, call `pipeline_INKA()` from `src/pipeline.py` or switch the `__main__` block to `pipeline_INKA()`.
+Run the INKA cell-line pipeline:
+
+```bash
+python experiments/run_inka_pipeline.py
+```
 
 ## Simulation Study
 
 Run the manuscript simulation study with 100 repeats:
 
 ```bash
-python src/simulation_experiment.py --runs 100 --output-dir results --max-k 10
+python experiments/simulation_experiment.py --runs 100 --output-dir results --max-k 10
 ```
 
 Expected output files:
@@ -120,9 +123,10 @@ Supplementary tables are stored in `manuscript/supplementary_tables/`:
 - `supplementary_table_s4_inka_substrate_statistics.csv`
 - `supplementary_table_s5_scz_kinase_rankings.csv`
 
-## Notes For Final Journal Release
+## Final Release Notes
 
-- Confirm the schizophrenia data availability statement and accession/controlled-access details.
-- The FDR sensitivity script is available at `scripts/run_fdr_sensitivity_analysis.py`; it is slower than the table/figure formatting scripts because it refits LIKA across multiple first-stage FDR thresholds.
+- The kinase-substrate network is derived from the KSEA App website: https://casecpb.shinyapps.io/ksea/.
+- The relevant KSEA App reference is *The KSEA App: a web-based tool for kinase activity inference from quantitative phosphoproteomics*.
+- The full SCZ/control phosphoproteomics dataset is not deposited here because LIKA uses a subset of the measured phosphoproteome. The analyzed values used by LIKA should be provided in the manuscript supplement, either at subject level or as group-level summaries depending on final journal/data-use requirements. Additional SCZ/control data can be made available from the corresponding author upon reasonable request.
 - Manuscript-specific generation and sensitivity analyses are kept in `scripts/` so the core LIKA implementation in `src/` remains focused.
 - Keep generated outputs in `results/` out of version control unless the journal specifically asks for static result files.

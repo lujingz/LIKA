@@ -301,7 +301,7 @@ def figure_3_from_summary(
 ):
     if not summary_path.exists():
         raise FileNotFoundError(
-            f"{summary_path} does not exist. Run `python src/simulation_experiment.py --runs 100 --output-dir results --max-k 10` first."
+            f"{summary_path} does not exist. Run `python experiments/simulation_experiment.py --runs 100 --output-dir results --max-k 10` first."
         )
     summary_df = pd.read_csv(summary_path)
     plot_precision_recall_summary(summary_df, output_path)
