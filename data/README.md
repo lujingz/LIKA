@@ -19,4 +19,5 @@ This folder contains processed inputs and source/support tables used by the LIKA
 
 - Zero intensity values are treated as missing values by the current preprocessing code.
 - The committed files are already processed. Raw-data preprocessing and SCZ/control covariate residualization are not fully represented in this repository yet.
-- Each current data file is a direct pipeline input. Generated outputs should stay in `results/`, which is ignored by git.
+- Each current data file is a direct pipeline input. Optional intermediate outputs should stay outside the repository.
+- Local exploratory copies, raw downloads, and generated result folders are intentionally excluded from this submission repository.

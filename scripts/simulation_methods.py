@@ -1,12 +1,11 @@
 """
-Simulation experiments for LIKA.
+Shared simulation methods for LIKA manuscript reproducibility.
 
-The default command repeats all three simulations over deterministic random
-seeds, writes per-kinase p-values/rankings, and summarizes precision@k and
-recall@k as used in the manuscript.
+This module contains the simulation data generators, LIKA/KSEA ranking logic,
+and precision/recall summaries. It does not write files directly; the
+manuscript-facing command is `scripts/generate_simulation_assets.py`.
 """
 
-import argparse
 import os
 import sys
 from pathlib import Path
@@ -35,7 +34,6 @@ from pipeline import (
     DEFAULT_ALPHA,
     DEFAULT_P_VALUE_RANK_FLOOR,
     new_pipeline,
-    pipeline,
     resolve_p_value_rank_floor,
 )
 from utils import my_network
@@ -44,26 +42,6 @@ from utils import my_network
 DEFAULT_RUNS = 100
 DEFAULT_BASE_SEED = 20260603
 DEFAULT_MAX_K = 10
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description=(
-            "Repeat the three LIKA simulation experiments and save per-kinase "
-            "rankings plus precision@k/recall@k summaries."
-        )
-    )
-    parser.add_argument("--runs", type=int, default=DEFAULT_RUNS, help="Number of runs per experiment.")
-    parser.add_argument(
-        "--base-seed",
-        type=int,
-        default=DEFAULT_BASE_SEED,
-        help="Base seed used to derive deterministic run seeds.",
-    )
-    parser.add_argument("--output-dir", default="results", help="Directory for output CSV and PNG files.")
-    parser.add_argument("--max-k", type=int, default=DEFAULT_MAX_K, help="Largest k for precision@k/recall@k.")
-    parser.add_argument("--no-plots", action="store_true", help="Skip precision/recall PNG generation.")
-    return parser.parse_args()
 
 
 def KSEA(intensity_df, log_transform=False, network_df=None):
@@ -93,7 +71,7 @@ def KSEA(intensity_df, log_transform=False, network_df=None):
         network = nx.from_pandas_edgelist(network_df, source="from", target="to", create_using=my_network)
         edge_df = network_df
     else:
-        edge_df = pd.read_csv('data/KSEA_dataset_processed.csv')
+        edge_df = pd.read_csv(ROOT / "data" / "KSEA_dataset_processed.csv")
         edge_df.columns = edge_df.columns.str.lower()
         edge_df = edge_df[edge_df['to'].isin(logFC.keys())].reset_index(drop=True)
         network = nx.from_pandas_edgelist(edge_df, source="from", target="to", create_using=my_network)
@@ -377,7 +355,7 @@ def plot_precision_recall_summary(summary_df, output_path):
     if len(experiments) == 1:
         axes = np.array([axes])
 
-    colors = {"LIKA": "#0072B2", "KSEA": "#D55E00"}
+    colors = {"LIKA": "#1b9e77", "KSEA": "#d95f02"}
     for row_idx, experiment in enumerate(experiments):
         experiment_df = summary_df[summary_df["experiment"] == experiment]
         ground_truth_count = int(experiment_df["ground_truth_count"].iloc[0])
@@ -386,12 +364,13 @@ def plot_precision_recall_summary(summary_df, output_path):
             ax = axes[row_idx, col_idx]
             for method in ("LIKA", "KSEA"):
                 method_df = experiment_df[experiment_df["method"] == method].sort_values("k")
-                ax.plot(method_df["k"], method_df[metric], marker="o", linewidth=1.8, label=method, color=colors[method])
-            ax.axvline(ground_truth_count, color="black", linestyle="--", linewidth=1, alpha=0.7)
-            ax.set_ylim(-0.02, 1.02)
+                ax.plot(method_df["k"], method_df[metric], marker="o", linewidth=2, label=method, color=colors[method])
+            ax.axvline(ground_truth_count, color="#555555", linestyle="--", linewidth=1.4, alpha=0.8)
+            ax.set_ylim(-0.03, 1.03)
             ax.set_title(f"Simulation Experiment {experiment}")
             ax.set_xlabel("k")
             ax.set_ylabel("Precision@k" if metric.startswith("precision") else "Recall@k")
+            ax.grid(True, axis="y", alpha=0.25)
             ax.spines[["top", "right"]].set_visible(False)
             if row_idx == 0 and col_idx == 0:
                 ax.legend(frameon=False)
@@ -399,73 +378,3 @@ def plot_precision_recall_summary(summary_df, output_path):
     fig.tight_layout()
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
-
-
-def run_single_experiment(experiment_number, input_fn, seed=42, output_dir="results"):
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    network_df, intensity_df, abnormal_kinases = input_fn(seed)
-
-    ksea_df, _ = KSEA(intensity_df, log_transform=False, network_df=network_df)
-    ksea_df.to_csv(output_dir / f"simulation_experiment_{experiment_number}_KSEA.csv", index=False)
-
-    _, _, lika_df, _, _ = pipeline(intensity_df, log_transform=False, network_df=network_df)
-    lika_df.to_csv(output_dir / f"simulation_experiment_{experiment_number}_LIKA.csv", index=False)
-    return network_df, intensity_df, abnormal_kinases
-
-
-def simulation_experiment_1():
-    return run_single_experiment(1, experiment_1_inputs)
-
-
-def simulation_experiment_2():
-    return run_single_experiment(2, experiment_2_inputs)
-
-
-def simulation_experiment_3():
-    return run_single_experiment(3, experiment_3_inputs)
-
-
-def main():
-    args = parse_args()
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    experiments = {
-        1: experiment_1_inputs,
-        2: experiment_2_inputs,
-        3: experiment_3_inputs,
-    }
-
-    ranking_outputs = []
-    for experiment_number, input_fn in experiments.items():
-        result_df = run_one_experiment(
-            experiment_number,
-            input_fn,
-            runs=args.runs,
-            base_seed=args.base_seed,
-        )
-        ranking_outputs.append(result_df)
-        output_path = output_dir / f"simulation_experiment_{experiment_number}_pvalue_rankings_{args.runs}runs.csv"
-        result_df.to_csv(output_path, index=False)
-        print(f"Wrote {output_path}")
-
-    all_rankings = pd.concat(ranking_outputs, ignore_index=True)
-    metric_df = precision_recall_at_k(all_rankings, max_k=args.max_k)
-    metric_path = output_dir / f"simulation_precision_recall_by_run_{args.runs}runs.csv"
-    metric_df.to_csv(metric_path, index=False)
-    print(f"Wrote {metric_path}")
-
-    summary_df = summarize_precision_recall(metric_df)
-    summary_path = output_dir / f"simulation_precision_recall_summary_{args.runs}runs.csv"
-    summary_df.to_csv(summary_path, index=False)
-    print(f"Wrote {summary_path}")
-
-    if not args.no_plots:
-        plot_path = output_dir / f"simulation_precision_recall_summary_{args.runs}runs.png"
-        plot_precision_recall_summary(summary_df, plot_path)
-        print(f"Wrote {plot_path}")
-
-
-if __name__ == "__main__":
-    main()

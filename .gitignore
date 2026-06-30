@@ -14,13 +14,20 @@ __pycache__/
 venv/
 env/
 .env
+LIKA/
 
-# Generated outputs
-results/
+# Logs
 *.log
+
+# Local/generated outputs that are not part of manuscript reproducibility
+results/
+experiments/
+outputs/
+intermediate/
+manuscript/archive/
+manuscript/figures/archive/
 
 # Editor and notebook checkpoints
 .idea/
 .vscode/
 .ipynb_checkpoints/
-

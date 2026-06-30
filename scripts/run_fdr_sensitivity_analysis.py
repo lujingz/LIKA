@@ -40,6 +40,7 @@ from pipeline import (
 
 DEFAULT_FDR_LEVELS = (0.01, 0.025, 0.05, 0.1, 0.2)
 DEFAULT_TOP_N = 10
+DEFAULT_OUTPUT_DIR = os.environ.get("LIKA_FDR_OUTPUT_DIR")
 
 mpl.rcParams.update(
     {
@@ -61,7 +62,14 @@ def parse_args():
         help="First-stage substrate FDR thresholds to evaluate.",
     )
     parser.add_argument("--top-n", type=int, default=DEFAULT_TOP_N, help="Top-N LIKA rankings to compare.")
-    parser.add_argument("--results-dir", default=ROOT / "results", type=Path, help="Directory for generated CSV/PNG/PDF outputs.")
+    parser.add_argument(
+        "--output-dir",
+        dest="results_dir",
+        metavar="OUTPUT_DIR",
+        default=Path(DEFAULT_OUTPUT_DIR) if DEFAULT_OUTPUT_DIR else None,
+        type=Path,
+        help="Optional directory for generated intermediate CSV/PNG/PDF outputs.",
+    )
     parser.add_argument(
         "--manuscript-figure",
         default=ROOT / "manuscript" / "figures" / "supplementary" / "supplementary_figure_fdr_sensitivity_top10_overlap.pdf",
@@ -73,6 +81,14 @@ def parse_args():
         default=ROOT / "manuscript" / "supplementary_tables" / "supplementary_figure_fdr_sensitivity_top10_overlap_source_data.csv",
         type=Path,
         help="CSV source data for the supplementary sensitivity heatmap.",
+    )
+    parser.add_argument(
+        "--use-existing-source-data",
+        action="store_true",
+        help=(
+            "Regenerate heatmaps from existing manuscript source data instead of refitting LIKA. "
+            "If the manuscript source data is missing, this can also read FDR sensitivity CSVs from output_dir."
+        ),
     )
     return parser.parse_args()
 
@@ -181,6 +197,172 @@ def matrix_summary_rows(dataset_name, counts, ratios, jaccard):
     return rows
 
 
+def find_existing_result(results_dir, *stems):
+    candidates = []
+    for stem in stems:
+        candidates.append(results_dir / f"{stem}.csv")
+        candidates.extend(sorted(results_dir.glob(f"{stem}_*.csv"), key=lambda path: path.stat().st_mtime, reverse=True))
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
+
+
+def normalize_matrix(matrix):
+    matrix = matrix.copy()
+    matrix.index = [f"{float(value):g}" for value in matrix.index]
+    matrix.columns = [f"{float(value):g}" for value in matrix.columns]
+    return matrix.astype(float)
+
+
+def read_cached_matrix(path):
+    return normalize_matrix(pd.read_csv(path, index_col=0))
+
+
+def source_data_from_matrices(ratios, counts, jaccards, top_n):
+    rows = []
+    for dataset_name, ratio in ratios.items():
+        count = counts.get(dataset_name)
+        jaccard = jaccards.get(dataset_name)
+        if count is None:
+            count = ratio * top_n
+        if jaccard is None:
+            jaccard = pd.DataFrame(np.nan, index=ratio.index, columns=ratio.columns)
+        rows.extend(matrix_summary_rows(dataset_name, count, ratio, jaccard))
+    return pd.DataFrame(rows)
+
+
+def matrix_from_source_data(source_data, dataset_name, value_column):
+    if value_column not in source_data.columns:
+        return None
+    dataset_rows = source_data[source_data["dataset"] == dataset_name]
+    if dataset_rows.empty:
+        return None
+    matrix = dataset_rows.pivot(index="fdr_y", columns="fdr_x", values=value_column)
+    return normalize_matrix(matrix)
+
+
+def load_existing_results(results_dir, top_n):
+    paths = {}
+    ratios = {}
+    counts = {}
+    jaccards = {}
+
+    for dataset_name in ["INKA", "SCZ"]:
+        lower_name = dataset_name.lower()
+        ratio_path = find_existing_result(
+            results_dir,
+            f"fdr_sensitivity_{dataset_name}_top{top_n}_overlap_ratio",
+            f"fdr_sensitivity_{lower_name}_top{top_n}_overlap_ratio",
+        )
+        if ratio_path is None:
+            raise FileNotFoundError(f"Could not find cached overlap-ratio CSV for {dataset_name} in {results_dir}")
+        paths[f"{dataset_name}_ratio"] = ratio_path
+        ratios[dataset_name] = read_cached_matrix(ratio_path)
+
+        count_path = find_existing_result(
+            results_dir,
+            f"fdr_sensitivity_{dataset_name}_top{top_n}_overlap_counts",
+            f"fdr_sensitivity_{lower_name}_top{top_n}_overlap_counts",
+        )
+        if count_path is not None:
+            paths[f"{dataset_name}_counts"] = count_path
+            counts[dataset_name] = read_cached_matrix(count_path)
+
+        jaccard_path = find_existing_result(
+            results_dir,
+            f"fdr_sensitivity_{dataset_name}_top{top_n}_jaccard",
+            f"fdr_sensitivity_{lower_name}_top{top_n}_jaccard",
+        )
+        if jaccard_path is not None:
+            paths[f"{dataset_name}_jaccard"] = jaccard_path
+            jaccards[dataset_name] = read_cached_matrix(jaccard_path)
+
+    summary_path = find_existing_result(results_dir, "fdr_sensitivity_overlap_summary")
+    if summary_path is not None:
+        paths["summary"] = summary_path
+        source_data = pd.read_csv(summary_path)
+    else:
+        source_data = source_data_from_matrices(ratios, counts, jaccards, top_n)
+
+    for dataset_name in ["INKA", "SCZ"]:
+        if dataset_name not in counts:
+            matrix = matrix_from_source_data(source_data, dataset_name, "overlap_count")
+            if matrix is not None:
+                counts[dataset_name] = matrix
+        if dataset_name not in jaccards:
+            matrix = matrix_from_source_data(source_data, dataset_name, "jaccard")
+            if matrix is not None:
+                jaccards[dataset_name] = matrix
+
+    top_path = find_existing_result(results_dir, "fdr_sensitivity_top10_lists")
+    top_df = None
+    if top_path is not None:
+        paths["top10"] = top_path
+        top_df = pd.read_csv(top_path)
+
+    return ratios, counts, jaccards, source_data, top_df, paths
+
+
+def load_existing_source_data(source_data_path):
+    source_data = pd.read_csv(source_data_path)
+    ratios = {}
+    counts = {}
+    jaccards = {}
+    for dataset_name in ["INKA", "SCZ"]:
+        ratio = matrix_from_source_data(source_data, dataset_name, "overlap_ratio")
+        if ratio is None:
+            raise ValueError(f"{source_data_path} does not contain overlap_ratio rows for {dataset_name}")
+        ratios[dataset_name] = ratio
+
+        count = matrix_from_source_data(source_data, dataset_name, "overlap_count")
+        if count is not None:
+            counts[dataset_name] = count
+
+        jaccard = matrix_from_source_data(source_data, dataset_name, "jaccard")
+        if jaccard is not None:
+            jaccards[dataset_name] = jaccard
+
+    return ratios, counts, jaccards, source_data, None, {"source_data": source_data_path}
+
+
+def save_existing_results_outputs(args, ratios, counts, jaccards, source_data, top_df, used_paths):
+    results_dir = args.results_dir
+    top_n = args.top_n
+
+    args.manuscript_source_data.parent.mkdir(parents=True, exist_ok=True)
+    source_data.to_csv(args.manuscript_source_data, index=False)
+
+    save_heatmap(ratios["INKA"], ratios["SCZ"], args.manuscript_figure)
+
+    print("Used cached FDR sensitivity files:")
+    for label, path in sorted(used_paths.items()):
+        print(f"  {label}: {path}")
+    if results_dir is not None:
+        results_dir.mkdir(parents=True, exist_ok=True)
+        for dataset_name in ["INKA", "SCZ"]:
+            lower_name = dataset_name.lower()
+            ratio = ratios[dataset_name]
+            ratio.to_csv(results_dir / f"fdr_sensitivity_{lower_name}_top{top_n}_overlap_ratio.csv")
+            if dataset_name in counts:
+                counts[dataset_name].to_csv(results_dir / f"fdr_sensitivity_{lower_name}_top{top_n}_overlap_counts.csv")
+            if dataset_name in jaccards:
+                jaccards[dataset_name].to_csv(results_dir / f"fdr_sensitivity_{lower_name}_top{top_n}_jaccard.csv")
+        source_data.to_csv(results_dir / "fdr_sensitivity_overlap_summary.csv", index=False)
+        if top_df is not None:
+            top_df.to_csv(results_dir / "fdr_sensitivity_top10_lists.csv", index=False)
+        heatmap_pdf = results_dir / "fdr_sensitivity_top10_overlap_heatmap.pdf"
+        heatmap_png = results_dir / "fdr_sensitivity_top10_overlap_heatmap.png"
+        save_heatmap(ratios["INKA"], ratios["SCZ"], heatmap_pdf, heatmap_png)
+        print(f"Wrote {results_dir / 'fdr_sensitivity_overlap_summary.csv'}")
+        if top_df is not None:
+            print(f"Wrote {results_dir / 'fdr_sensitivity_top10_lists.csv'}")
+        print(f"Wrote {heatmap_pdf}")
+        print(f"Wrote {heatmap_png}")
+    print(f"Wrote {args.manuscript_source_data}")
+    print(f"Wrote {args.manuscript_figure}")
+
+
 def save_heatmap(inka_ratio, scz_ratio, output_pdf, output_png=None):
     sns.set_theme(context="talk", style="white", font_scale=1.2)
     cmap = LinearSegmentedColormap.from_list("lika_blues", ["white", "#0072B2"], N=100)
@@ -217,7 +399,19 @@ def main():
     args = parse_args()
     fdr_levels = tuple(args.fdr_levels)
     results_dir = args.results_dir
-    results_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.use_existing_source_data:
+        if args.manuscript_source_data.exists():
+            ratios, counts, jaccards, source_data, top_df, used_paths = load_existing_source_data(args.manuscript_source_data)
+        else:
+            if results_dir is None:
+                raise FileNotFoundError(
+                    f"{args.manuscript_source_data} does not exist. Provide --output-dir with cached FDR CSVs "
+                    "or rerun without --use-existing-source-data."
+                )
+            ratios, counts, jaccards, source_data, top_df, used_paths = load_existing_results(results_dir, args.top_n)
+        save_existing_results_outputs(args, ratios, counts, jaccards, source_data, top_df, used_paths)
+        return
 
     inka_rankings, inka_top = run_dataset(
         "INKA",
@@ -236,35 +430,39 @@ def main():
 
     all_rankings = pd.concat([inka_rankings, scz_rankings], ignore_index=True)
     all_top = pd.concat([inka_top, scz_top], ignore_index=True)
-    all_rankings.to_csv(results_dir / "fdr_sensitivity_all_rankings.csv", index=False)
-    all_top.to_csv(results_dir / "fdr_sensitivity_top10_lists.csv", index=False)
 
     ratios = {}
     summary_rows = []
     for dataset_name in ["INKA", "SCZ"]:
         counts, ratio, jaccard = overlap_matrices(all_top, dataset_name, fdr_levels, args.top_n)
         ratios[dataset_name] = ratio
-        counts.to_csv(results_dir / f"fdr_sensitivity_{dataset_name.lower()}_top10_overlap_counts.csv")
-        ratio.to_csv(results_dir / f"fdr_sensitivity_{dataset_name.lower()}_top10_overlap_ratio.csv")
-        jaccard.to_csv(results_dir / f"fdr_sensitivity_{dataset_name.lower()}_top10_jaccard.csv")
         summary_rows.extend(matrix_summary_rows(dataset_name, counts, ratio, jaccard))
+        if results_dir is not None:
+            results_dir.mkdir(parents=True, exist_ok=True)
+            counts.to_csv(results_dir / f"fdr_sensitivity_{dataset_name.lower()}_top10_overlap_counts.csv")
+            ratio.to_csv(results_dir / f"fdr_sensitivity_{dataset_name.lower()}_top10_overlap_ratio.csv")
+            jaccard.to_csv(results_dir / f"fdr_sensitivity_{dataset_name.lower()}_top10_jaccard.csv")
 
     source_data = pd.DataFrame(summary_rows)
-    source_data.to_csv(results_dir / "fdr_sensitivity_overlap_summary.csv", index=False)
     args.manuscript_source_data.parent.mkdir(parents=True, exist_ok=True)
     source_data.to_csv(args.manuscript_source_data, index=False)
 
-    heatmap_pdf = results_dir / "fdr_sensitivity_top10_overlap_heatmap.pdf"
-    heatmap_png = results_dir / "fdr_sensitivity_top10_overlap_heatmap.png"
-    save_heatmap(ratios["INKA"], ratios["SCZ"], heatmap_pdf, heatmap_png)
     save_heatmap(ratios["INKA"], ratios["SCZ"], args.manuscript_figure)
 
-    print(f"Wrote {results_dir / 'fdr_sensitivity_all_rankings.csv'}")
-    print(f"Wrote {results_dir / 'fdr_sensitivity_top10_lists.csv'}")
-    print(f"Wrote {results_dir / 'fdr_sensitivity_overlap_summary.csv'}")
+    if results_dir is not None:
+        results_dir.mkdir(parents=True, exist_ok=True)
+        all_rankings.to_csv(results_dir / "fdr_sensitivity_all_rankings.csv", index=False)
+        all_top.to_csv(results_dir / "fdr_sensitivity_top10_lists.csv", index=False)
+        source_data.to_csv(results_dir / "fdr_sensitivity_overlap_summary.csv", index=False)
+        heatmap_pdf = results_dir / "fdr_sensitivity_top10_overlap_heatmap.pdf"
+        heatmap_png = results_dir / "fdr_sensitivity_top10_overlap_heatmap.png"
+        save_heatmap(ratios["INKA"], ratios["SCZ"], heatmap_pdf, heatmap_png)
+        print(f"Wrote {results_dir / 'fdr_sensitivity_all_rankings.csv'}")
+        print(f"Wrote {results_dir / 'fdr_sensitivity_top10_lists.csv'}")
+        print(f"Wrote {results_dir / 'fdr_sensitivity_overlap_summary.csv'}")
+        print(f"Wrote {heatmap_pdf}")
+        print(f"Wrote {heatmap_png}")
     print(f"Wrote {args.manuscript_source_data}")
-    print(f"Wrote {heatmap_pdf}")
-    print(f"Wrote {heatmap_png}")
     print(f"Wrote {args.manuscript_figure}")
 
 

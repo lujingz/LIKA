@@ -5,44 +5,72 @@ This repository contains the code and processed analysis assets for the LIKA man
 ## Repository Layout
 
 - `src/`: reusable LIKA implementation and statistical methods.
-- `experiments/`: executable analysis and simulation scripts.
+- `scripts/`: reproducibility entry points and manuscript asset-generation utilities.
 - `data/`: processed input data used by the analysis scripts.
 - `manuscript/`: manuscript PDF, main figures, supplementary figures, and supplementary tables.
-- `scripts/`: manuscript-facing generation/audit utilities kept separate from the core LIKA implementation.
-- `results/`: generated outputs from local runs. This directory is ignored by git.
 - `REPRODUCIBILITY.md`: commands and file map for reproducing the manuscript analyses.
 
 ## Installation
 
 ```bash
-conda create -n LIKA python=3.10 -y
-conda activate LIKA
-pip install -r requirements.txt
+conda env create -f environment.yml
+conda activate lika
 ```
 
-Some optional graph visualizations may require Graphviz system libraries.
-
-## Run The Analyses
-
-Run the SCZ/control analysis:
+Alternatively, install the Python dependencies directly:
 
 ```bash
-python experiments/run_scz_pipeline.py
+python -m pip install -r requirements.txt
 ```
 
-Run the INKA cell-line analysis:
+The manuscript scripts were tested with Python 3.11. The dependency files are
+kept concise and platform-independent for review and archival release.
+
+## Quick Validation
+
+After installation, check that the committed manuscript assets are present:
 
 ```bash
-python experiments/run_inka_pipeline.py
+python scripts/generate_manuscript_assets.py --audit
 ```
 
-Run the simulation study with the manuscript default of 100 repeats:
+To verify the plotting and table-generation paths without refitting LIKA/KSEA,
+run:
 
 ```bash
-python experiments/simulation_experiment.py --runs 100 --output-dir results --max-k 10
+python scripts/generate_scz_assets.py --use-existing-ranking
+python scripts/generate_inka_assets.py --use-existing-ranking
+python scripts/run_fdr_sensitivity_analysis.py --use-existing-source-data
 ```
 
-See [REPRODUCIBILITY.md](REPRODUCIBILITY.md) for the expected outputs and manuscript asset mapping.
+## Reproducibility Scripts
+
+The repository has three explicit reproducibility settings. These scripts write
+only the manuscript-facing files needed for reproducibility under `manuscript/`.
+They do not export rejection sets, GraphML files, or other exploratory result
+objects.
+
+SCZ/control analysis:
+
+```bash
+python scripts/generate_scz_assets.py
+```
+
+INKA cell-line analysis:
+
+```bash
+python scripts/generate_inka_assets.py
+```
+
+Simulation experiment with the manuscript default of 100 repeats:
+
+```bash
+python scripts/generate_simulation_assets.py --runs 100 --max-k 10
+```
+
+The simulation script can optionally write per-run intermediate CSV files with
+`--write-intermediate-dir`, but this is off by default because the manuscript
+requires only the summarized Figure 3 source data.
 
 Audit manuscript assets:
 
@@ -51,6 +79,12 @@ python scripts/generate_manuscript_assets.py --audit
 ```
 
 Regenerate the FDR sensitivity heatmap:
+
+```bash
+python scripts/run_fdr_sensitivity_analysis.py --use-existing-source-data
+```
+
+Fully recompute the FDR sensitivity analysis:
 
 ```bash
 python scripts/run_fdr_sensitivity_analysis.py
